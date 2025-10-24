@@ -1,18 +1,28 @@
+# --------------------------------------------------------------
 # caption_report.py
+# --------------------------------------------------------------
+# This version writes the results directly to a Google Sheet.
+# It no longer creates a CSV file.
+# --------------------------------------------------------------
+
 from __future__ import print_function
-import csv
 import re
+import csv          # kept only for backward‑compatibility (not used)
 import requests
 import concurrent.futures
 from bs4 import BeautifulSoup
 from google.colab import userdata
 
-# --------------------------------------------------------------
-# 1️⃣  CONSTANTS –‑ put your secrets here (keep the notebook private!)
-# --------------------------------------------------------------
+# ----------------------------------------------------------------------
+# 1️⃣  CONSTANTS –‑ put your real secrets here (keep the notebook private!)
+# ----------------------------------------------------------------------
 CANVAS_API_URL   = userdata.get('CANVAS_API_URL')   # <-- your Canvas host
 CANVAS_API_KEY   = userdata.get('CANVAS_API_KEY') # <-- Canvas token
-YOUTUBE_API_KEY  = userdata.get('YOUTUBE_API_KEY')          # <-- YouTube key
+YOUTUBE_API_KEY  = userdata.get('YOUTUBE_API_KEY')          # <-- YouTube keykey
+
+# ----------------------------------------------------------------------
+# 2️⃣  Other immutable constants
+# ----------------------------------------------------------------------
 YT_CAPTION_URL = "https://www.googleapis.com/youtube/v3/captions"
 YT_VIDEO_URL   = "https://www.googleapis.com/youtube/v3/videos"
 
@@ -38,19 +48,65 @@ except ImportError as exc:
     raise ImportError(
         "The 'canvasapi' package is required. Install it with:\n"
         "    !pip install canvasapi\n"
-        "In Google Colab run: !pip install canvasapi"
+        "In Google Colab run: !pip install canvasapi"
     ) from exc
 
 # ----------------------------------------------------------------------
-# 4️⃣  Helper to build a clean Authorization header (no leading spaces,
-#     new‑lines or other illegal characters)
+# 4️⃣  Google‑Sheets / Auth imports (with safe fallback for non‑Colab)
+# ----------------------------------------------------------------------
+def _import_google_auth():
+    """
+    Try to import Colab's auth helpers. If we are not in Colab we create
+    a dummy object that has an ``authenticate_user`` method which does
+    nothing – this lets the script run (it will still need valid
+    credentials in the environment).
+    """
+    try:
+        from google.colab import auth as colab_auth
+        from oauth2client.client import GoogleCredentials
+        return colab_auth, GoogleCredentials
+    except Exception:                     # pragma: no cover
+        # Not running in Colab – create a no‑op placeholder.
+        class _DummyAuth:
+            def authenticate_user(self):
+                pass
+
+        class _DummyCreds:
+            @staticmethod
+            def get_application_default():
+                raise RuntimeError(
+                    "Google authentication not available. "
+                    "Run this script inside a Colab notebook or set up "
+                    "service‑account credentials manually."
+                )
+
+        return _DummyAuth(), _DummyCreds
+
+# Import (or create dummy) objects
+auth, GoogleCredentials = _import_google_auth()
+
+# gspread is required for Sheets access. Install it if missing.
+def _ensure_gspread():
+    try:
+        import gspread  # noqa: F401
+    except ImportError:                     # pragma: no cover
+        import subprocess, sys
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--quiet", "gspread", "oauth2client"]
+        )
+
+_ensure_gspread()
+import gspread
+
+# ----------------------------------------------------------------------
+# 5️⃣  Helper to build a clean Authorization header (no stray spaces)
 # ----------------------------------------------------------------------
 def _auth_header(token: str) -> dict:
     """Return a properly‑formatted Authorization header."""
     return {"Authorization": f"Bearer {token.strip()}"}
 
 # ----------------------------------------------------------------------
-# 5️⃣  Utility functions (unchanged apart from doc‑strings)
+# 6️⃣  Utility functions (unchanged apart from doc‑strings)
 # ----------------------------------------------------------------------
 def _add_entry(
     d,
@@ -62,7 +118,7 @@ def _add_entry(
     second: str = "",
     file_location: str = "",
 ):
-    """Store a row that will later be written to the CSV."""
+    """Store a row that will later be written to the sheet."""
     d[name] = [status, hour, minute, second, page, file_location]
 
 
@@ -175,7 +231,7 @@ def _process_html(
 
 
 # ----------------------------------------------------------------------
-# 6️⃣  YouTube helper functions
+# 7️⃣  YouTube helper functions
 # ----------------------------------------------------------------------
 YT_DUR_RE = re.compile(r"[0-9]+[HMS]")
 
@@ -242,29 +298,29 @@ def _check_youtube(task):
 
 
 # ----------------------------------------------------------------------
-# 7️⃣  PUBLIC API – only `course_input` is required
+# 8️⃣  PUBLIC API – only `course_input` is required
 # ----------------------------------------------------------------------
 def run_caption_report(
     course_input: str,
-    csv_path: str = None,
-    upload_to_drive: bool = False,
+    csv_path: str = None,          # kept for backward compatibility – ignored
+    upload_to_drive: bool = False, # kept for backward compatibility – ignored
 ) -> str:
     """
-    Generate a CSV of media items & caption status for a Canvas course.
+    Generate a **Google Sheet** with media items & caption status for a Canvas course.
 
     Parameters
     ----------
     course_input : str
         Canvas course ID **or** full Canvas URL.
     csv_path : str, optional
-        Destination filename (default: "<course‑name>.csv").
-    upload_to_drive : bool, default False
-        If True the CSV will be uploaded to Google Drive (Colab only).
+        Ignored – kept only so older calls do not break.
+    upload_to_drive : bool, optional
+        Ignored – the sheet is already stored in Drive.
 
     Returns
     -------
     str
-        Path to the created CSV file.
+        URL of the created (or updated) Google Sheet.
     """
     # --------------------------------------------------------------
     # Resolve the numeric course id (handles both plain id and full URL)
@@ -286,14 +342,8 @@ def run_caption_report(
     print(f"Processing Canvas course: {course.name}")
 
     # --------------------------------------------------------------
-    # CSV preparation
-    # --------------------------------------------------------------
-    if not csv_path:
-        csv_path = f"{course.name}.csv"
-    csv_file = open(csv_path, "w", newline="", encoding="utf-8")
-    writer = csv.writer(csv_file)
-
     # Containers that will be filled by the parsers
+    # --------------------------------------------------------------
     yt_links = {}
     media_links = {}
     link_media = {}
@@ -422,26 +472,23 @@ def run_caption_report(
                 yt_processed[k] = [st, h, m, s] + pg
     yt_links = yt_processed
 
-# --------------------------------------------------------------
+    # --------------------------------------------------------------
     # 8️⃣ Write results **directly to a Google Sheet**
     # --------------------------------------------------------------
-    # Authenticate to Google Drive / Sheets
     print("Authenticating to Google Drive / Sheets …")
+    # In Colab this will pop‑up an auth dialog; in non‑Colab the dummy
+    # auth object will simply do nothing (but the next line will raise
+    # an informative error if credentials are missing).
     auth.authenticate_user()
-    gauth = GoogleCredentials.get_application_default()
-    gc = gspread.authorize(gauth)
+    gc = gspread.authorize(GoogleCredentials.get_application_default())
 
     # Create (or open) a spreadsheet named after the course
     sheet_title = f"CAPTION_REPORT_{course.name}"
     try:
-        # Try to open an existing spreadsheet with that exact title
-        sh = gc.open(sheet_title)
+        sh = gc.open(sheet_title)                # try to open existing
         print(f"Opened existing sheet: {sheet_title}")
     except gspread.SpreadsheetNotFound:
-        # Create a new spreadsheet
-        sh = gc.create(sheet_title)
-        # Move it to the same folder as the notebook (optional)
-        # (Colab notebooks are stored in the root of Drive, so we leave it there)
+        sh = gc.create(sheet_title)              # create new
         print(f"Created new sheet: {sheet_title}")
 
     # Use the first worksheet (or create one if none exists)
@@ -465,15 +512,12 @@ def run_caption_report(
     ]
     ws.append_row(header)
 
-    # Helper to flatten a dict into rows
+    # Helper to flatten a dict into rows and write them in bulk
     def _append_dict_rows(d):
-        rows = []
-        for key, vals in d.items():
-            rows.append([key] + vals)
+        rows = [[key] + vals for key, vals in d.items()]
         if rows:
             ws.append_rows(rows, value_input_option="RAW")
 
-    # Append each of the four result dictionaries
     _append_dict_rows(yt_links)
     _append_dict_rows(media_links)
     _append_dict_rows(link_media)
@@ -486,5 +530,3 @@ def run_caption_report(
     # 9️⃣ Return the Sheet URL (instead of a CSV path)
     # --------------------------------------------------------------
     return sheet_url
-
-
