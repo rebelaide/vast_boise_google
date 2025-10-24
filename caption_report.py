@@ -6,7 +6,7 @@ import requests
 import concurrent.futures
 from bs4 import BeautifulSoup
 from canvasapi import Canvas
-
+from google.colab import userdata
 # ----------------------------------------------------------------------
 # CONSTANTS that never change
 # ----------------------------------------------------------------------
@@ -465,3 +465,4 @@ def run_caption_report(
             print(f'⚠️  Drive upload failed: {e}')
 
     return csv_path
+
