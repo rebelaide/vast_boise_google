@@ -19,6 +19,7 @@ from google.colab import userdata
 CANVAS_API_URL   = userdata.get('CANVAS_API_URL')   # <-- your Canvas host
 CANVAS_API_KEY   = userdata.get('CANVAS_API_KEY') # <-- Canvas token
 YOUTUBE_API_KEY  = userdata.get('YOUTUBE_API_KEY')          # <-- YouTube keykey
+
 # ----------------------------------------------------------------------
 # 2️⃣  Other immutable constants
 # ----------------------------------------------------------------------
@@ -51,62 +52,27 @@ except ImportError as exc:
     ) from exc
 
 # ----------------------------------------------------------------------
-# 4️⃣  Google‑Sheets / Auth imports
+# 4️⃣  Google‑Drive / Sheets authentication (the exact snippet you gave)
 # ----------------------------------------------------------------------
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
+from google.colab import auth as colab_auth
+from oauth2client.client import GoogleCredentials
+
 def _get_gspread_client():
     """
-    Returns an authorized ``gspread`` client.
-
-    * If a file called ``service_account.json`` exists in the current
-      working directory, we use it (the most reliable method).
-    * Otherwise we fall back to the Colab auth flow, which uses
-      ``oauth2client.client.GoogleCredentials``.
+    Authenticates using the snippet you provided and returns an
+    authorized ``gspread`` client.
     """
-    # --------------------------------------------------------------
-    # 4.1  Try service‑account JSON (works everywhere)
-    # --------------------------------------------------------------
-    import os, json, pathlib
-    service_account_path = pathlib.Path("service_account.json")
-    if service_account_path.is_file():
-        # Install gspread if it is not already present
-        try:
-            import gspread
-        except ImportError:                     # pragma: no cover
-            import subprocess, sys
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "--quiet", "gspread"]
-            )
-            import gspread
+    # ---- Colab‑style authentication (runs only once per notebook) ----
+    colab_auth.authenticate_user()
+    gauth = GoogleAuth()
+    gauth.credentials = GoogleCredentials.get_application_default()
+    drive = GoogleDrive(gauth)          # the Drive client is created but not used further
 
-        # Load the service account – this returns a fully‑authorized client
-        return gspread.service_account(filename=str(service_account_path))
-
-    # --------------------------------------------------------------
-    # 4.2  No service‑account file → use Colab auth (or generic oauth2client)
-    # --------------------------------------------------------------
-    # Ensure the required packages are installed
-    try:
-        import gspread
-    except ImportError:                     # pragma: no cover
-        import subprocess, sys
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet", "gspread", "oauth2client"]
-        )
-        import gspread
-
-    # Import Colab auth helper if we are inside Colab
-    try:
-        from google.colab import auth as colab_auth
-        colab_auth.authenticate_user()
-    except Exception:  # pragma: no cover
-        # Not in Colab – nothing to do; we rely on default application
-        # credentials (e.g. `gcloud auth application-default login`).
-        pass
-
-    # oauth2client provides the credentials object gspread expects
-    from oauth2client.client import GoogleCredentials
-    credentials = GoogleCredentials.get_application_default()
-    return gspread.authorize(credentials)
+    # ---- Build a gspread client from the same credentials ------------
+    import gspread
+    return gspread.authorize(gauth.credentials)
 
 
 # ----------------------------------------------------------------------
@@ -487,7 +453,7 @@ def run_caption_report(
     # 8️⃣ Write results **directly to a Google Sheet**
     # --------------------------------------------------------------
     print("Authenticating to Google Drive / Sheets …")
-    gc = _get_gspread_client()   # <-- handles service‑account or Colab auth
+    gc = _get_gspread_client()   # <-- uses the exact auth snippet you gave
 
     # Create (or open) a spreadsheet named after the course
     sheet_title = f"CAPTION_REPORT_{course.name}"
