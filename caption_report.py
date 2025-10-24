@@ -290,7 +290,7 @@ def run_caption_report(course_input: str) -> str:
             rows.append([key] + vals)
 
     df = pd.DataFrame(rows, columns=[
-        "Media", "Caption Status", "Hour", "Minute", "Second", "Page Location", "File Location"
+        "Media", "Caption Status", "Hour", "Minute", "Second", "Location", "File Location"
     ])
 
     # --------------------------------------------------------------
@@ -324,3 +324,4 @@ def run_caption_report(course_input: str) -> str:
     print(f"\n✅ Report complete for: {course.name}")
     print(f"📎 Google Sheet URL: {sh.url}")
     return sh.url
+
