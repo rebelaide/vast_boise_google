@@ -6,15 +6,15 @@ import requests
 import concurrent.futures
 from bs4 import BeautifulSoup
 from canvasapi import Canvas
-from google.colab import userdata
+
 # ----------------------------------------------------------------------
 # CONSTANTS that never change
 # ----------------------------------------------------------------------
 YT_CAPTION_URL = 'https://www.googleapis.com/youtube/v3/captions'
 YT_VIDEO_URL   = 'https://www.googleapis.com/youtube/v3/videos'
-CANVAS_API_KEY   = userdata.get('CANVAS_API_KEY')      # e.g. "abcd1234"
-YOUTUBE_API_KEY  = userdata.get('YOUTUBE_API_KEY')
-CANVAS_API_URL   = userdata.get('CANVAS_API_URL')
+canvas_api_key   = userdata.get('CANVAS_API_KEY')      # e.g. "abcd1234"
+youtube_api_key  = userdata.get('YOUTUBE_API_KEY')
+canvas_api_url   = userdata.get('CANVAS_API_URL')
 
 # Regex that extracts the 11‑character YouTube video id
 YT_PATTERN = (
@@ -465,4 +465,3 @@ def run_caption_report(
             print(f'⚠️  Drive upload failed: {e}')
 
     return csv_path
-
