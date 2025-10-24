@@ -183,8 +183,11 @@ def run_caption_report(course_input: str) -> str:
     """Generate caption report and write directly to a Google Sheet."""
     # Authenticate for Sheets
     print("Authenticating with Google Sheets …")
-    colab_auth.authenticate_user()
-    gc = gspread.authorize(gspread.auth.default()[0]) if hasattr(gspread, 'auth') else gspread.oauth()
+    from google.colab import auth
+    from google.auth import default
+    auth.authenticate_user()
+    creds, _ = default()
+    gc = gspread.authorize(creds)
 
     # Get Canvas course
     if "courses/" in course_input:
@@ -278,3 +281,4 @@ def run_caption_report(course_input: str) -> str:
 
     print(f"✅ Report written to Google Sheet: {sh.url}")
     return sh.url
+
