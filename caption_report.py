@@ -297,7 +297,7 @@ def run_caption_report(course_input: str) -> str:
     # Create or replace Google Sheet
     # --------------------------------------------------------------
     print("\n📄 Creating or updating Google Sheet …")
-    sheet_title = f"{course.name} Caption Report"
+    sheet_title = f"{course.name} VAST Report"
 
     try:
         existing_sheets = gc.list_spreadsheet_files()
@@ -323,5 +323,6 @@ def run_caption_report(course_input: str) -> str:
 
     print(f"\n✅ Report complete for: {course.name}")
     print(f"📎 Google Sheet URL: {sh.url}")
+
 
 
