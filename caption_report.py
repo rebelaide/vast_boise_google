@@ -1,4 +1,3 @@
-# caption_report_sheets.py
 from __future__ import print_function
 import re
 import requests
@@ -284,14 +283,28 @@ def run_caption_report(course_input: str) -> str:
     # Combine results into a DataFrame
     # --------------------------------------------------------------
     print("\n📊 Compiling results …")
+    
+    # Check if there are any linked audio/video files
+    has_linked_files = len(link_media) > 0
+    
     rows = []
     for container in (yt_links, media_links, link_media, lib_media):
         for key, vals in container.items():
             rows.append([key] + vals)
 
-    df = pd.DataFrame(rows, columns=[
-        "Media", "Caption Status", "Hour", "Minute", "Second", "Location", "File Location"
-    ])
+    # Define columns based on whether there are linked files
+    if has_linked_files:
+        columns = [
+            "Media", "Caption Status", "Hour", "Minute", "Second", "Location", "File Location"
+        ]
+    else:
+        columns = [
+            "Media", "Caption Status", "Hour", "Minute", "Second", "Location"
+        ]
+        # Remove the file_location value from rows that don't need it
+        rows = [[row[0]] + row[1:6] for row in rows]
+
+    df = pd.DataFrame(rows, columns=columns)
 
     # --------------------------------------------------------------
     # Create or replace Google Sheet
@@ -323,6 +336,3 @@ def run_caption_report(course_input: str) -> str:
 
     print(f"\n✅ Report complete for: {course.name}")
     print(f"📎 Google Sheet URL: {sh.url}")
-
-
-
