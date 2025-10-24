@@ -422,47 +422,69 @@ def run_caption_report(
                 yt_processed[k] = [st, h, m, s] + pg
     yt_links = yt_processed
 
+# --------------------------------------------------------------
+    # 8️⃣ Write results **directly to a Google Sheet**
     # --------------------------------------------------------------
-    # 8️⃣ Write CSV
+    # Authenticate to Google Drive / Sheets
+    print("Authenticating to Google Drive / Sheets …")
+    auth.authenticate_user()
+    gauth = GoogleCredentials.get_application_default()
+    gc = gspread.authorize(gauth)
+
+    # Create (or open) a spreadsheet named after the course
+    sheet_title = f"CAPTION_REPORT_{course.name}"
+    try:
+        # Try to open an existing spreadsheet with that exact title
+        sh = gc.open(sheet_title)
+        print(f"Opened existing sheet: {sheet_title}")
+    except gspread.SpreadsheetNotFound:
+        # Create a new spreadsheet
+        sh = gc.create(sheet_title)
+        # Move it to the same folder as the notebook (optional)
+        # (Colab notebooks are stored in the root of Drive, so we leave it there)
+        print(f"Created new sheet: {sheet_title}")
+
+    # Use the first worksheet (or create one if none exists)
+    try:
+        ws = sh.sheet1
+    except Exception:
+        ws = sh.add_worksheet(title="Sheet1", rows="1000", cols="20")
+
+    # Clear any previous content
+    ws.clear()
+
+    # Header row – same order as the old CSV
+    header = [
+        "Media",
+        "Caption Status",
+        "Hour",
+        "Minute",
+        "Second",
+        "Page Location",
+        "File Location",
+    ]
+    ws.append_row(header)
+
+    # Helper to flatten a dict into rows
+    def _append_dict_rows(d):
+        rows = []
+        for key, vals in d.items():
+            rows.append([key] + vals)
+        if rows:
+            ws.append_rows(rows, value_input_option="RAW")
+
+    # Append each of the four result dictionaries
+    _append_dict_rows(yt_links)
+    _append_dict_rows(media_links)
+    _append_dict_rows(link_media)
+    _append_dict_rows(lib_media)
+
+    sheet_url = sh.url
+    print(f"✅ Google Sheet created/updated: {sheet_url}")
+
     # --------------------------------------------------------------
-    writer.writerow([
-        "Media", "Caption Status", "Hour", "Minute",
-        "Second", "Page Location", "File Location"
-    ])
-    for container in (yt_links, media_links, link_media, lib_media):
-        for key, vals in container.items():
-            writer.writerow([key] + vals)
-
-    csv_file.close()
-    print(f"✅ CSV written to {csv_path}")
-
+    # 9️⃣ Return the Sheet URL (instead of a CSV path)
     # --------------------------------------------------------------
-    # 9️⃣ Optional Google‑Drive upload (Colab only)
-    # --------------------------------------------------------------
-    if upload_to_drive:
-        try:
-            from google.colab import auth
-            from oauth2client.client import GoogleCredentials
-            from pydrive2.auth import GoogleAuth
-            from pydrive2.drive import GoogleDrive
+    return sheet_url
 
-            print("Authenticating to Google Drive …")
-            auth.authenticate_user()
-            gauth = GoogleAuth()
-            gauth.credentials = GoogleCredentials.get_application_default()
-            drive = GoogleDrive(gauth)
 
-            uploaded = drive.CreateFile({
-                "title": csv_path,
-                "mimeType": "text/csv"
-            })
-            uploaded.SetContentFile(csv_path)
-            uploaded.Upload()
-            fid = uploaded.get("id")
-            print("📁 Uploaded to Drive.")
-            print(f"View: https://drive.google.com/file/d/{fid}/view")
-            print(f"Sheets: https://docs.google.com/spreadsheets/d/{fid}/edit")
-        except Exception as e:
-            print(f"⚠️  Drive upload failed: {e}")
-
-    return csv_path
