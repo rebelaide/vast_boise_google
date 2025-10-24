@@ -28,7 +28,6 @@ LIB_MEDIA_URLS = [
     "boisestate.hosted.panopto.com",
     "hosted.panopto.com"
 ]
-
 # ----------------------------------------------------------------------
 # 3️⃣  CanvasAPI import – fails fast with a helpful message
 # ----------------------------------------------------------------------
@@ -51,7 +50,7 @@ from oauth2client.client import GoogleCredentials
 
 def _get_drive_client():
     """
-    Authenticates using the snippet you provided and returns a
+    Authenticates using the snippet you supplied and returns a
     ``GoogleDrive`` client that can be used to upload files.
     """
     # This will pop‑up the Google auth dialog the first time it runs.
@@ -262,28 +261,20 @@ def _check_youtube(task):
 # ----------------------------------------------------------------------
 # 8️⃣  PUBLIC API – only `course_input` is required
 # ----------------------------------------------------------------------
-def run_caption_report(
-    course_input: str,
-    csv_path: str = None,
-    upload_to_drive: bool = True,   # keep True – we upload the CSV
-) -> str:
+def run_caption_report(course_input: str) -> str:
     """
     Generate a CSV of media items & caption status for a Canvas course,
-    then upload the CSV to Google Drive.
+    then **always** upload the CSV to Google Drive.
 
     Parameters
     ----------
     course_input : str
         Canvas course ID **or** full Canvas URL.
-    csv_path : str, optional
-        Destination filename (default: "<course‑name>.csv").
-    upload_to_drive : bool, optional
-        If True (default) the CSV is uploaded to Drive and the URL is returned.
 
     Returns
     -------
     str
-        URL of the uploaded CSV file on Google Drive.
+        Share‑able Google‑Drive URL of the uploaded CSV file.
     """
     # --------------------------------------------------------------
     # Resolve the numeric course id (handles both plain id and full URL)
@@ -307,8 +298,7 @@ def run_caption_report(
     # --------------------------------------------------------------
     # CSV preparation
     # --------------------------------------------------------------
-    if not csv_path:
-        csv_path = f"{course.name}.csv"
+    csv_path = f"{course.name}.csv"
     csv_file = open(csv_path, "w", newline="", encoding="utf-8")
     writer = csv.writer(csv_file)
 
@@ -456,22 +446,19 @@ def run_caption_report(
     print(f"✅ CSV written to {csv_path}")
 
     # --------------------------------------------------------------
-    # 9️⃣ Upload CSV to Google Drive (if requested)
+    # 9️⃣ Upload CSV to Google Drive (forced)
     # --------------------------------------------------------------
-    if upload_to_drive:
-        print("Uploading CSV to Google Drive …")
-        drive = _get_drive_client()
-        uploaded = drive.CreateFile({
-            "title": csv_path,
-            "mimeType": "text/csv"
-        })
-        uploaded.SetContentFile(csv_path)
-        uploaded.Upload()
-        file_id = uploaded.get("id")
-        sheet_url = f"https://drive.google.com/file/d/{file_id}/view"
-        print("✅ Upload complete!")
-        print(f"View your file here: {sheet_url}")
-        return sheet_url
+    print("Uploading CSV to Google Drive …")
+    drive = _get_drive_client()
+    uploaded = drive.CreateFile({
+        "title": csv_path,
+        "mimeType": "text/csv"
+    })
+    uploaded.SetContentFile(csv_path)
+    uploaded.Upload()
+    file_id = uploaded.get("id")
+    drive_url = f"https://drive.google.com/file/d/{file_id}/view"
+    print("✅ Upload complete!")
+    print(f"Your file is available at: {drive_url}")
 
-    # If upload_to_drive is False, just return the local path
-    return csv_path
+    return drive_url
