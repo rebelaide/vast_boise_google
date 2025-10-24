@@ -170,7 +170,7 @@ def _check_youtube(task):
 # ----------------------------------------------------------------------
 # MAIN FUNCTION
 # ----------------------------------------------------------------------
-def run_caption(course_input: str) -> str:
+def run_caption_report(course_input: str) -> str:
     """Generate caption report and write directly to a Google Sheet (replace existing content if sheet exists)."""
 
     # Authenticate Google Sheets for Colab
@@ -314,3 +314,4 @@ def run_caption(course_input: str) -> str:
 
     print(f"\n✅ Report complete for: {course.name}")
     print(f"📎 Google Sheet URL: {sh.url}")
+
