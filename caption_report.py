@@ -323,5 +323,5 @@ def run_caption_report(course_input: str) -> str:
 
     print(f"\n✅ Report complete for: {course.name}")
     print(f"📎 Google Sheet URL: {sh.url}")
-    return sh.url
+
 
