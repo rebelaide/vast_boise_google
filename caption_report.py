@@ -29,49 +29,225 @@ LIB_MEDIA_URLS = [
     "hosted.panopto.com"
 ]
 
-# --------------------------------------------------------------
-# 3️⃣  CanvasAPI import (fails fast with a helpful message)
-# --------------------------------------------------------------
+# ----------------------------------------------------------------------
+# 3️⃣  CanvasAPI import – fails fast with a helpful message
+# ----------------------------------------------------------------------
 try:
     from canvasapi import Canvas
 except ImportError as exc:
     raise ImportError(
         "The 'canvasapi' package is required. Install it with:\n"
         "    !pip install canvasapi\n"
-        "In Colab run: !pip install canvasapi"
+        "In Google Colab run: !pip install canvasapi"
     ) from exc
 
 # ----------------------------------------------------------------------
-# 4️⃣  Helper utilities (unchanged – only tiny doc‑string tweaks)
+# 4️⃣  Helper to build a clean Authorization header (no leading spaces,
+#     new‑lines or other illegal characters)
 # ----------------------------------------------------------------------
-def _add_entry(d, name, status, page, hour='', minute='', second='', file_location=''):
+def _auth_header(token: str) -> dict:
+    """Return a properly‑formatted Authorization header."""
+    return {"Authorization": f"Bearer {token.strip()}"}
+
+# ----------------------------------------------------------------------
+# 5️⃣  Utility functions (unchanged apart from doc‑strings)
+# ----------------------------------------------------------------------
+def _add_entry(
+    d,
+    name,
+    status,
+    page,
+    hour: str = "",
+    minute: str = "",
+    second: str = "",
+    file_location: str = "",
+):
     """Store a row that will later be written to the CSV."""
     d[name] = [status, hour, minute, second, page, file_location]
+
 
 def _check_media_object(url: str):
     """Return (url, status‑string) for a Canvas media_object."""
     try:
-        txt = requests.get(url).text
+        txt = requests.get(url, headers=_auth_header(CANVAS_API_KEY)).text
         if '"kind":"subtitles"' in txt:
             return (
                 url,
-                'Captions in English' if '"locale":"en"' in txt
-                else 'No English Captions'
+                "Captions in English" if '"locale":"en"' in txt else "No English Captions",
             )
-        return (url, 'No Captions')
+        return (url, "No Captions")
     except requests.RequestException:
-        return (url, 'Unable to Check Media Object')
+        return (url, "Unable to Check Media Object")
 
-# (All other helper functions – `_process_html`, YouTube helpers, etc. –
-# remain exactly as they were.  No changes needed there.)
+
+def _process_html(
+    soup,
+    course,
+    page,
+    yt_links,
+    media_links,
+    link_media,
+    lib_media,
+):
+    """Parse a BeautifulSoup page and fill the dict containers."""
+    media_objs, iframe_objs = [], []
+
+    # ----- <a> tags -------------------------------------------------
+    for a in soup.find_all("a"):
+        href = a.get("href")
+        if not href:
+            continue
+
+        # Canvas file links (audio / video)
+        try:
+            file_id = a.get("data-api-endpoint").split("/")[-1]
+            f = course.get_file(file_id)
+            f_url = f.url.split("?")[0]
+
+            if "audio" in f.mime_class:
+                _add_entry(
+                    link_media,
+                    f"Linked Audio File: {f.display_name}",
+                    "Manually Check for Captions",
+                    page,
+                    file_location=f_url,
+                )
+            if "video" in f.mime_class:
+                _add_entry(
+                    link_media,
+                    f"Linked Video File: {f.display_name}",
+                    "Manually Check for Captions",
+                    page,
+                    file_location=f_url,
+                )
+        except Exception:
+            pass
+
+        # Classify the link
+        if re.search(YT_PATTERN, href):
+            yt_links.setdefault(href, []).append(page)
+        elif any(u in href for u in LIB_MEDIA_URLS):
+            _add_entry(lib_media, href, "Manually Check for Captions", page)
+        elif "media_objects" in href:
+            media_objs.append(href)
+
+    # ----- <iframe> tags -------------------------------------------
+    for frm in soup.find_all("iframe"):
+        src = frm.get("src")
+        if not src:
+            continue
+        if re.search(YT_PATTERN, src):
+            yt_links.setdefault(src, []).append(page)
+        elif any(u in src for u in LIB_MEDIA_URLS):
+            _add_entry(lib_media, src, "Manually Check for Captions", page)
+        elif "media_objects_iframe" in src:
+            iframe_objs.append(src)
+
+    # ----- Canvas media objects (parallel) -------------------------
+    all_media = list(set(media_objs + iframe_objs))
+    if all_media:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+            for url, msg in ex.map(_check_media_object, all_media):
+                _add_entry(media_links, url, msg, page)
+
+    # ----- <video> tags --------------------------------------------
+    for vid in soup.find_all("video"):
+        if vid.get("data-media_comment_id"):
+            name = f"Video Media Comment {vid['data-media_comment_id']}"
+            status = "Captions" if vid.find("track") else "No Captions"
+            _add_entry(media_links, name, status, page)
+
+    # ----- <source> tags (embedded Canvas video) -------------------
+    for src in soup.find_all("source"):
+        if src.get("type") == "video/mp4":
+            name = f"Embedded Canvas Video {src['src']}"
+            _add_entry(media_links, name, "Manually Check for Captions", page)
+
+    # ----- <audio> tags --------------------------------------------
+    for aud in soup.find_all("audio"):
+        if aud.get("data-media_comment_id"):
+            name = f"Audio Media Comment {aud['data-media_comment_id']}"
+            status = "Captions" if aud.find("track") else "No Captions"
+            _add_entry(media_links, name, status, page)
+        else:
+            name = f"Embedded Canvas Audio {aud.get('src', '')}"
+            _add_entry(media_links, name, "Manually Check for Captions", page)
+
 
 # ----------------------------------------------------------------------
-# 5️⃣  PUBLIC API – only **course_input** is required now
+# 6️⃣  YouTube helper functions
+# ----------------------------------------------------------------------
+YT_DUR_RE = re.compile(r"[0-9]+[HMS]")
+
+
+def _parse_iso8601(duration: str):
+    """Convert an ISO‑8601 duration (e.g. PT1H5M10S) → (h,m,s)."""
+    h, m, sec = "0", "0", "0"
+    for token in YT_DUR_RE.findall(duration):
+        unit = token[-1]
+        val = token[:-1]
+        if unit == "H":
+            h = val
+        elif unit == "M":
+            m = val
+        elif unit == "S":
+            sec = val
+    return h, m, sec
+
+
+def _check_youtube(task):
+    """
+    Worker for a single YouTube video.
+
+    task = (key, video_id, pages, youtube_api_key)
+    Returns (key, status, (h,m,s), pages)
+    """
+    key, vid, pages, api_key = task
+    if not vid:  # playlist or malformed URL
+        return key, "this is a playlist, check individual videos", ("", "", ""), pages
+
+    try:
+        # ---- duration -------------------------------------------------
+        r1 = requests.get(
+            f"{YT_VIDEO_URL}?part=contentDetails&id={vid}&key={api_key}"
+        )
+        dur = r1.json()["items"][0]["contentDetails"]["duration"]
+        h, m, s = _parse_iso8601(dur)
+
+        # ---- captions -------------------------------------------------
+        r2 = requests.get(
+            f"{YT_CAPTION_URL}?part=snippet&videoId={vid}&key={api_key}"
+        )
+        caps = r2.json().get("items", [])
+        status = "No Captions"
+
+        if caps:
+            langs = {
+                c["snippet"]["language"]: c["snippet"]["trackKind"] for c in caps
+            }
+            if "en" in langs or "en-US" in langs:
+                kind = langs.get("en") or langs.get("en-US")
+                if kind == "standard":
+                    status = "Captions found in English"
+                elif kind == "asr":
+                    status = "Automatic Captions in English"
+                else:
+                    status = "Captions in English (unknown kind)"
+            else:
+                status = "No Captions in English"
+
+        return key, status, (h, m, s), pages
+    except Exception:
+        return key, "Unable to Check Youtube Video", ("", "", ""), pages
+
+
+# ----------------------------------------------------------------------
+# 7️⃣  PUBLIC API – only `course_input` is required
 # ----------------------------------------------------------------------
 def run_caption_report(
     course_input: str,
     csv_path: str = None,
-    upload_to_drive: bool = False
+    upload_to_drive: bool = False,
 ) -> str:
     """
     Generate a CSV of media items & caption status for a Canvas course.
@@ -103,7 +279,7 @@ def run_caption_report(
         course_id = course_input.strip()
 
     # --------------------------------------------------------------
-    # Initialise Canvas client – uses the **constants** above
+    # Initialise Canvas client – uses the constants defined at the top
     # --------------------------------------------------------------
     canvas = Canvas(CANVAS_API_URL, CANVAS_API_KEY)
     course = canvas.get_course(course_id)
@@ -132,8 +308,7 @@ def run_caption_report(
             return
         soup = BeautifulSoup(html.encode("utf-8"), "html.parser")
         _process_html(
-            soup, course, location,
-            yt_links, media_links, link_media, lib_media
+            soup, course, location, yt_links, media_links, link_media, lib_media
         )
 
     # --------------------------------------------------------------
@@ -183,8 +358,7 @@ def run_caption_report(
                 if re.search(YT_PATTERN, href):
                     yt_links.setdefault(href, []).append(mod_url)
                 if any(u in href for u in LIB_MEDIA_URLS):
-                    _add_entry(lib_media, href,
-                               "Manually Check for Captions", mod_url)
+                    _add_entry(lib_media, href, "Manually Check for Captions", mod_url)
 
             # File items – treat as linked audio/video
             if item.type == "File":
@@ -193,15 +367,21 @@ def run_caption_report(
                     f_url = f.url.split("?")[0]
                     name = f.display_name
                     if "audio" in f.mime_class:
-                        _add_entry(link_media,
-                                   f"Linked Audio File: {name}",
-                                   "Manually Check for Captions",
-                                   mod_url, file_location=f_url)
+                        _add_entry(
+                            link_media,
+                            f"Linked Audio File: {name}",
+                            "Manually Check for Captions",
+                            mod_url,
+                            file_location=f_url,
+                        )
                     if "video" in f.mime_class:
-                        _add_entry(link_media,
-                                   f"Linked Video File: {name}",
-                                   "Manually Check for Captions",
-                                   mod_url, file_location=f_url)
+                        _add_entry(
+                            link_media,
+                            f"Linked Video File: {name}",
+                            "Manually Check for Captions",
+                            mod_url,
+                            file_location=f_url,
+                        )
                 except Exception:
                     pass
 
@@ -213,7 +393,7 @@ def run_caption_report(
         _handle(ann.message, ann.html_url)
 
     # --------------------------------------------------------------
-    # 7️⃣ YouTube processing (parallel) – uses the **constant** YOUTUBE_API_KEY
+    # 7️⃣ YouTube processing (parallel) – uses the constant YOUTUBE_API_KEY
     # --------------------------------------------------------------
     print("Checking YouTube captions …")
     yt_tasks = []
@@ -234,9 +414,7 @@ def run_caption_report(
         if video_id:
             yt_tasks.append((key, video_id, pages, YOUTUBE_API_KEY))
         else:
-            yt_processed[key] = [
-                "Unable to parse Video ID", "", "", ""
-            ] + pages
+            yt_processed[key] = ["Unable to parse Video ID", "", "", ""] + pages
 
     if yt_tasks:
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
