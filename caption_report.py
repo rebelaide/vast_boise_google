@@ -33,6 +33,15 @@ LIB_MEDIA_URLS = [
 ]
 
 # ----------------------------------------------------------------------
+# CanvasAPI
+# ----------------------------------------------------------------------
+try:
+    from canvasapi import Canvas
+except ImportError as exc:
+    raise ImportError("Please install canvasapi via `!pip install canvasapi`") from exc
+
+
+# ----------------------------------------------------------------------
 # Helper Functions
 # ----------------------------------------------------------------------
 def _auth_header(token: str) -> dict:
@@ -314,4 +323,4 @@ def run_caption_report(course_input: str) -> str:
 
     print(f"\n✅ Report complete for: {course.name}")
     print(f"📎 Google Sheet URL: {sh.url}")
-
+    return sh.url
