@@ -51,63 +51,63 @@ except ImportError as exc:
     ) from exc
 
 # ----------------------------------------------------------------------
-# 4️⃣  Google‑Sheets / Auth imports (with safe fallback for non‑Colab)
+# 4️⃣  Google‑Sheets / Auth imports
 # ----------------------------------------------------------------------
-def _import_google_auth():
+def _get_gspread_client():
     """
-    Returns:
-        - a callable `authenticate_user` (real one in Colab, no‑op otherwise)
-        - a function `get_credentials` that returns a Google‑Auth credentials
-          object suitable for gspread.
+    Returns an authorized ``gspread`` client.
+
+    * If a file called ``service_account.json`` exists in the current
+      working directory, we use it (the most reliable method).
+    * Otherwise we fall back to the Colab auth flow, which uses
+      ``oauth2client.client.GoogleCredentials``.
     """
+    # --------------------------------------------------------------
+    # 4.1  Try service‑account JSON (works everywhere)
+    # --------------------------------------------------------------
+    import os, json, pathlib
+    service_account_path = pathlib.Path("service_account.json")
+    if service_account_path.is_file():
+        # Install gspread if it is not already present
+        try:
+            import gspread
+        except ImportError:                     # pragma: no cover
+            import subprocess, sys
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--quiet", "gspread"]
+            )
+            import gspread
+
+        # Load the service account – this returns a fully‑authorized client
+        return gspread.service_account(filename=str(service_account_path))
+
+    # --------------------------------------------------------------
+    # 4.2  No service‑account file → use Colab auth (or generic oauth2client)
+    # --------------------------------------------------------------
+    # Ensure the required packages are installed
     try:
-        # Colab environment – use its auth helper
-        from google.colab import auth as colab_auth
-
-        def _authenticate():
-            colab_auth.authenticate_user()
-
-        # google.auth.default works after the above call
-        import google.auth
-
-        def _get_creds():
-            creds, _ = google.auth.default()
-            return creds
-
-        return _authenticate, _get_creds
-    except Exception:  # pragma: no cover
-        # Not in Colab – fall back to the standard google‑auth flow.
-        # It expects the environment variable GOOGLE_APPLICATION_CREDENTIALS
-        # to point at a service‑account JSON file, or that you have run
-        # `gcloud auth application-default login` beforehand.
-        def _authenticate():
-            # No interactive auth available – just a placeholder.
-            pass
-
-        import google.auth
-
-        def _get_creds():
-            creds, _ = google.auth.default()
-            return creds
-
-        return _authenticate, _get_creds
-
-
-# Import (or create dummy) objects
-_authenticate_user, _get_google_credentials = _import_google_auth()
-
-# Ensure gspread is installed
-def _ensure_gspread():
-    try:
-        import gspread  # noqa: F401
+        import gspread
     except ImportError:                     # pragma: no cover
         import subprocess, sys
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet", "gspread", "google-auth"]
+            [sys.executable, "-m", "pip", "install", "--quiet", "gspread", "oauth2client"]
         )
+        import gspread
 
-_ensure_gspread()
-import gspread
+    # Import Colab auth helper if we are inside Colab
+    try:
+        from google.colab import auth as colab_auth
+        colab_auth.authenticate_user()
+    except Exception:  # pragma: no cover
+        # Not in Colab – nothing to do; we rely on default application
+        # credentials (e.g. `gcloud auth application-default login`).
+        pass
+
+    # oauth2client provides the credentials object gspread expects
+    from oauth2client.client import GoogleCredentials
+    credentials = GoogleCredentials.get_application_default()
+    return gspread.authorize(credentials)
+
 
 # ----------------------------------------------------------------------
 # 5️⃣  Helper to build a clean Authorization header (no stray spaces)
@@ -487,20 +487,15 @@ def run_caption_report(
     # 8️⃣ Write results **directly to a Google Sheet**
     # --------------------------------------------------------------
     print("Authenticating to Google Drive / Sheets …")
-    _authenticate_user()                     # Colab dialog (or no‑op outside)
-
-    # Obtain a google‑auth credentials object (works with service‑account
-    # JSON, application‑default credentials, or the Colab auth flow)
-    credentials = _get_google_credentials()
-    gc = gspread.authorize(credentials)
+    gc = _get_gspread_client()   # <-- handles service‑account or Colab auth
 
     # Create (or open) a spreadsheet named after the course
     sheet_title = f"CAPTION_REPORT_{course.name}"
     try:
         sh = gc.open(sheet_title)                # try to open existing
         print(f"Opened existing sheet: {sheet_title}")
-    except gspread.SpreadsheetNotFound:
-        sh = gc.create(sheet_title)              # create new
+    except Exception:  # SpreadsheetNotFound or generic – create new
+        sh = gc.create(sheet_title)
         print(f"Created new sheet: {sheet_title}")
 
     # Use the first worksheet (or create one if none exists)
