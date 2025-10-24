@@ -12,12 +12,12 @@ from six.moves import input
 # ==================== CONFIGURATION ====================
 
 # Canvas API Key
-api_key = '15177~H8PVFuWL7KkxvzNDc7h2fvLA3rwUAXTaaWYFJHuUa7D2tJJ3rHGwy38hmPRwAxaf'
+api_key = ''
 # Canvas URL
-api_url = 'https://boisestatecanvas.instructure.com'
+api_url = ''
 
 # YouTube API
-youtube_key = 'AIzaSyDT9XbAhNzfMv0-cLFH3USN6yjurx1kDkU'
+youtube_key = ''
 google_url = 'https://www.googleapis.com/youtube/v3/captions'
 google_video = 'https://www.googleapis.com/youtube/v3/videos'
 
