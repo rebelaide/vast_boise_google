@@ -4,7 +4,7 @@ import re
 import requests
 import concurrent.futures
 from bs4 import BeautifulSoup
-from google.colab import userdata, auth as colab_auth
+from google.colab import userdata
 import gspread
 from gspread_dataframe import set_with_dataframe
 import pandas as pd
@@ -180,8 +180,9 @@ def _check_youtube(task):
 # MAIN FUNCTION
 # ----------------------------------------------------------------------
 def run_caption_report(course_input: str) -> str:
-    """Generate caption report and write directly to a Google Sheet."""
-    # Authenticate for Sheets
+    """Generate caption report and write directly to a Google Sheet (replace existing content if sheet exists)."""
+
+    # Authenticate Google Sheets for Colab
     print("Authenticating with Google Sheets …")
     from google.colab import auth
     from google.auth import default
@@ -199,7 +200,7 @@ def run_caption_report(course_input: str) -> str:
     course = canvas.get_course(course_id)
     print(f"Processing Canvas course: {course.name}")
 
-    # Containers
+    # Data containers
     yt_links, media_links, link_media, lib_media = {}, {}, {}, {}
 
     def _handle(html, location):
@@ -262,7 +263,7 @@ def run_caption_report(course_input: str) -> str:
                 yt_processed[k] = [st, h, m, s] + pg
     yt_links = yt_processed
 
-    # Combine all results into a DataFrame
+    # Combine all results
     rows = []
     for container in (yt_links, media_links, link_media, lib_media):
         for key, vals in container.items():
@@ -271,14 +272,31 @@ def run_caption_report(course_input: str) -> str:
         "Media", "Caption Status", "Hour", "Minute", "Second", "Page Location", "File Location"
     ])
 
-    # Create a new Google Sheet and write data
-    print("Creating Google Sheet …")
+    # Create or replace sheet
+    print("Creating or updating Google Sheet …")
     sheet_title = f"{course.name} Caption Report"
-    sh = gc.create(sheet_title)
-    ws = sh.sheet1
+
+    try:
+        existing_sheets = gc.list_spreadsheet_files()
+        sheet = next((s for s in existing_sheets if s["name"] == sheet_title), None)
+    except Exception:
+        sheet = None
+
+    if sheet:
+        print(f"Found existing sheet: {sheet_title}. Replacing contents …")
+        sh = gc.open_by_key(sheet["id"])
+        ws = sh.sheet1
+        ws.clear()
+    else:
+        print(f"No existing sheet found. Creating: {sheet_title}")
+        sh = gc.create(sheet_title)
+        ws = sh.sheet1
+
     set_with_dataframe(ws, df)
-    sh.share('', perm_type='anyone', role='reader')
+    try:
+        sh.share('', perm_type='anyone', role='reader')
+    except Exception:
+        pass
 
-    print(f"✅ Report written to Google Sheet: {sh.url}")
+    print(f"✅ Report available at: {sh.url}")
     return sh.url
-
