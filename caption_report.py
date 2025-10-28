@@ -27,7 +27,6 @@ LIB_MEDIA_URLS = [
     "fod.infobase.com",
     "search.alexanderstreet.com",
     "kanopystreaming-com",
-    "boisestate.hosted.panopto.com",
     "hosted.panopto.com"
 ]
 
@@ -336,3 +335,4 @@ def run_caption_report(course_input: str) -> str:
 
     print(f"\n✅ Report complete for: {course.name}")
     print(f"📎 Google Sheet URL: {sh.url}")
+
