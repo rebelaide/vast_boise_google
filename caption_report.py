@@ -168,17 +168,21 @@ def _check_youtube(task):
         return key, "Unable to Check Youtube Video", ("", "", ""), pages
 
 # ----------------------------------------------------------------------
-# NEW FUNCTION: Convert time components to consolidated format
+# NEW FUNCTIONS: Time handling and totaling
 # ----------------------------------------------------------------------
 def _consolidate_time(hour_str, minute_str, second_str):
     """
     Convert hour, minute, second strings to consolidated "HH:MM" format.
     Rounds up seconds to the next minute if seconds > 0.
+    Returns tuple: (formatted_string, total_minutes_for_summing)
     """
     try:
         hours = int(hour_str) if hour_str and hour_str.strip() else 0
         minutes = int(minute_str) if minute_str and minute_str.strip() else 0
         seconds = int(second_str) if second_str and second_str.strip() else 0
+        
+        # Calculate total minutes for summing (before rounding up seconds)
+        total_minutes = hours * 60 + minutes + (1 if seconds > 0 else 0)
         
         # Round up to next minute if there are any seconds
         if seconds > 0:
@@ -189,9 +193,18 @@ def _consolidate_time(hour_str, minute_str, second_str):
             hours += minutes // 60
             minutes = minutes % 60
         
-        return f"{hours:02d}:{minutes:02d}"
+        return f"{hours:02d}:{minutes:02d}", total_minutes
     except (ValueError, TypeError):
-        return ""
+        return "", 0
+
+def _minutes_to_duration(total_minutes):
+    """Convert total minutes back to HH:MM format"""
+    if total_minutes <= 0:
+        return "00:00"
+    
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+    return f"{hours:02d}:{minutes:02d}"
 
 # ----------------------------------------------------------------------
 # MAIN FUNCTION
@@ -298,7 +311,7 @@ def run_caption_report(course_input: str) -> str:
     yt_links = yt_processed
 
     # --------------------------------------------------------------
-    # Combine results into a DataFrame with consolidated time
+    # Combine results into a DataFrame with consolidated time and totaling
     # --------------------------------------------------------------
     print("\n📊 Compiling results …")
 
@@ -306,6 +319,8 @@ def run_caption_report(course_input: str) -> str:
     has_linked_files = len(link_media) > 0
 
     rows = []
+    total_minutes = 0  # Track total duration
+    
     for container in (yt_links, media_links, link_media, lib_media):
         for key, vals in container.items():
             # Extract time components (if they exist)
@@ -314,8 +329,9 @@ def run_caption_report(course_input: str) -> str:
                 location = vals[4] if len(vals) > 4 else ""
                 file_location = vals[5] if len(vals) > 5 else ""
                 
-                # Consolidate time
-                duration = _consolidate_time(hour, minute, second)
+                # Consolidate time and get minutes for totaling
+                duration, minutes_to_add = _consolidate_time(hour, minute, second)
+                total_minutes += minutes_to_add
                 
                 # Build row based on whether we have file locations
                 if has_linked_files:
@@ -328,6 +344,15 @@ def run_caption_report(course_input: str) -> str:
                     rows.append([key] + vals + [""] * (5 - len(vals)))
                 else:
                     rows.append([key] + vals + [""] * (4 - len(vals)))
+
+    # Add total row
+    total_duration = _minutes_to_duration(total_minutes)
+    if has_linked_files:
+        total_row = ["TOTAL DURATION", "", total_duration, "", ""]
+    else:
+        total_row = ["TOTAL DURATION", "", total_duration, ""]
+    
+    rows.append(total_row)
 
     # Define columns based on whether there are linked files
     if has_linked_files:
@@ -371,3 +396,4 @@ def run_caption_report(course_input: str) -> str:
 
     print(f"\n✅ Report complete for: {course.name}")
     print(f"📎 Google Sheet URL: {sh.url}")
+    print(f"⏱️  Total media duration: {total_duration}")
