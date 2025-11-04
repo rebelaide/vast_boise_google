@@ -7,6 +7,7 @@ from google.colab import userdata
 import gspread
 from gspread_dataframe import set_with_dataframe
 import pandas as pd
+import math
 
 # --------------------------------------------------------------
 # 1️⃣ CONSTANTS – your secrets (keep notebook private)
@@ -19,8 +20,8 @@ YT_CAPTION_URL = "https://www.googleapis.com/youtube/v3/captions"
 YT_VIDEO_URL   = "https://www.googleapis.com/youtube/v3/videos"
 
 YT_PATTERN = (
-    r'(?:https?:\/\/)?(?:[0-9A-Z-]+\.)?(?:youtube|youtu|youtube-nocookie)\.'
-    r'(?:com|be)\/(?:watch\?v=|watch\?.+&v=|embed\/|v\/|.+\?v=)?([^&=\n%\?]{11})'
+    r'(?:https?://)?(?:[0-9A-Z-]+.)?(?:youtube|youtu|youtube-nocookie).'
+    r'(?:com|be)/(?:watch\?v=|watch\?.+&v=|embed/|v/|.+\?v=)?([^&=\n%\?]{11})'
 )
 
 LIB_MEDIA_URLS = [
@@ -38,17 +39,14 @@ try:
 except ImportError as exc:
     raise ImportError("Please install canvasapi via `!pip install canvasapi`") from exc
 
-
 # ----------------------------------------------------------------------
 # Helper Functions
 # ----------------------------------------------------------------------
 def _auth_header(token: str) -> dict:
     return {"Authorization": f"Bearer {token.strip()}"}
 
-
 def _add_entry(d, name, status, page, hour="", minute="", second="", file_location=""):
     d[name] = [status, hour, minute, second, page, file_location]
-
 
 def _check_media_object(url: str):
     try:
@@ -58,7 +56,6 @@ def _check_media_object(url: str):
         return (url, "No Captions")
     except requests.RequestException:
         return (url, "Unable to Check Media Object")
-
 
 def _process_html(soup, course, page, yt_links, media_links, link_media, lib_media):
     media_objs, iframe_objs = [], []
@@ -124,12 +121,10 @@ def _process_html(soup, course, page, yt_links, media_links, link_media, lib_med
             name = f"Embedded Canvas Audio {aud.get('src', '')}"
             _add_entry(media_links, name, "Manually Check for Captions", page)
 
-
 # ----------------------------------------------------------------------
 # YouTube Helpers
 # ----------------------------------------------------------------------
 YT_DUR_RE = re.compile(r"[0-9]+[HMS]")
-
 
 def _parse_iso8601(duration: str):
     h, m, sec = "0", "0", "0"
@@ -143,7 +138,6 @@ def _parse_iso8601(duration: str):
         elif unit == "S":
             sec = val
     return h, m, sec
-
 
 def _check_youtube(task):
     key, vid, pages, api_key = task
@@ -173,6 +167,31 @@ def _check_youtube(task):
     except Exception:
         return key, "Unable to Check Youtube Video", ("", "", ""), pages
 
+# ----------------------------------------------------------------------
+# NEW FUNCTION: Convert time components to consolidated format
+# ----------------------------------------------------------------------
+def _consolidate_time(hour_str, minute_str, second_str):
+    """
+    Convert hour, minute, second strings to consolidated "HH:MM" format.
+    Rounds up seconds to the next minute if seconds > 0.
+    """
+    try:
+        hours = int(hour_str) if hour_str and hour_str.strip() else 0
+        minutes = int(minute_str) if minute_str and minute_str.strip() else 0
+        seconds = int(second_str) if second_str and second_str.strip() else 0
+        
+        # Round up to next minute if there are any seconds
+        if seconds > 0:
+            minutes += 1
+        
+        # Handle minute overflow
+        if minutes >= 60:
+            hours += minutes // 60
+            minutes = minutes % 60
+        
+        return f"{hours:02d}:{minutes:02d}"
+    except (ValueError, TypeError):
+        return ""
 
 # ----------------------------------------------------------------------
 # MAIN FUNCTION
@@ -279,29 +298,46 @@ def run_caption_report(course_input: str) -> str:
     yt_links = yt_processed
 
     # --------------------------------------------------------------
-    # Combine results into a DataFrame
+    # Combine results into a DataFrame with consolidated time
     # --------------------------------------------------------------
     print("\n📊 Compiling results …")
-    
+
     # Check if there are any linked audio/video files
     has_linked_files = len(link_media) > 0
-    
+
     rows = []
     for container in (yt_links, media_links, link_media, lib_media):
         for key, vals in container.items():
-            rows.append([key] + vals)
+            # Extract time components (if they exist)
+            if len(vals) >= 4:
+                status, hour, minute, second = vals[0], vals[1], vals[2], vals[3]
+                location = vals[4] if len(vals) > 4 else ""
+                file_location = vals[5] if len(vals) > 5 else ""
+                
+                # Consolidate time
+                duration = _consolidate_time(hour, minute, second)
+                
+                # Build row based on whether we have file locations
+                if has_linked_files:
+                    rows.append([key, status, duration, location, file_location])
+                else:
+                    rows.append([key, status, duration, location])
+            else:
+                # Fallback for entries without time data
+                if has_linked_files:
+                    rows.append([key] + vals + [""] * (5 - len(vals)))
+                else:
+                    rows.append([key] + vals + [""] * (4 - len(vals)))
 
     # Define columns based on whether there are linked files
     if has_linked_files:
         columns = [
-            "Media", "Caption Status", "Hour", "Minute", "Second", "Location", "File Location"
+            "Media", "Caption Status", "Duration (HH:MM)", "Location", "File Location"
         ]
     else:
         columns = [
-            "Media", "Caption Status", "Hour", "Minute", "Second", "Location"
+            "Media", "Caption Status", "Duration (HH:MM)", "Location"
         ]
-        # Remove the file_location value from rows that don't need it
-        rows = [[row[0]] + row[1:6] for row in rows]
 
     df = pd.DataFrame(rows, columns=columns)
 
@@ -335,4 +371,3 @@ def run_caption_report(course_input: str) -> str:
 
     print(f"\n✅ Report complete for: {course.name}")
     print(f"📎 Google Sheet URL: {sh.url}")
-
