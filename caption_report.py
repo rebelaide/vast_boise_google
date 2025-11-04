@@ -348,9 +348,9 @@ def run_caption_report(course_input: str) -> str:
     # Add total row
     total_duration = _minutes_to_duration(total_minutes)
     if has_linked_files:
-        total_row = ["TOTAL DURATION", "", total_duration, "", ""]
+        total_row = ["Total Duration", "", total_duration, "", ""]
     else:
-        total_row = ["TOTAL DURATION", "", total_duration, ""]
+        total_row = ["Total Duration", "", total_duration, ""]
     
     rows.append(total_row)
 
