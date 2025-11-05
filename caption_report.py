@@ -432,6 +432,56 @@ def upload_to_google_sheets(df, sheet_name, worksheet_name="VAST Report"):
     except Exception as e:
         print(f"Error uploading to Google Sheets: {str(e)}")
 
+def run_caption_report(course_input):
+    """
+    Main function that runs the complete VAST report with accessibility testing
+    Args:
+        course_input: Canvas course URL or course ID
+    Returns:
+        Dictionary containing the analysis results
+    """
+    try:
+        # Extract course ID from URL if needed
+        if isinstance(course_input, str) and "courses/" in course_input:
+            course_id = int(course_input.split("courses/")[-1].split("/")[0])
+        else:
+            course_id = int(course_input)
+        
+        print(f"🎯 Analyzing Course ID: {course_id}")
+        
+        # Run the analysis
+        analysis = analyze_course(course_id)
+        
+        # Create the report
+        course_name = f"Course_{course_id}"
+        df, stats = create_vast_report(analysis, course_name)
+        
+        # Print summary
+        print("\n📊 === VAST Report Summary ===")
+        for key, value in stats.items():
+            print(f"   {key}: {value}")
+        
+        # Save to CSV
+        csv_filename = f"{course_name}_vast_report.csv"
+        df.to_csv(csv_filename, index=False)
+        print(f"\n💾 Report saved as {csv_filename}")
+        
+        # Display first few rows
+        print(f"\n📋 Preview of report (first 5 rows):")
+        print(df.head().to_string())
+        
+        return {
+            'analysis': analysis,
+            'dataframe': df,
+            'summary': stats,
+            'csv_file': csv_filename
+        }
+        
+    except Exception as e:
+        print(f"❌ Error in run_caption_report: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
 # Example usage
 if __name__ == "__main__":
     # Replace with your course ID
@@ -456,3 +506,4 @@ if __name__ == "__main__":
     
     # Optionally upload to Google Sheets
     # upload_to_google_sheets(df, "VAST Reports", f"{course_name} Report")
+
