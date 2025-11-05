@@ -8,6 +8,10 @@ import gspread
 from gspread_dataframe import set_with_dataframe
 import pandas as pd
 import math
+import subprocess
+import json
+import tempfile
+import os
 
 # --------------------------------------------------------------
 # 1️⃣ CONSTANTS – your secrets (keep notebook private)
@@ -48,6 +52,102 @@ def _auth_header(token: str) -> dict:
 def _add_entry(d, name, status, page, hour="", minute="", second="", file_location=""):
     d[name] = [status, hour, minute, second, page, file_location]
 
+def _add_accessibility_entry(d, page, issue_type, message, code="", selector=""):
+    """Add accessibility issue entry following the same format as media entries"""
+    name = f"A11Y: {issue_type} - {page}"
+    status = f"{message} (Code: {code})" if code else message
+    d[name] = [status, "", "", "", page, selector]
+
+def _check_pa11y_installed():
+    """Check if pa11y is installed and install if necessary"""
+    try:
+        subprocess.run(['pa11y', '--version'], capture_output=True, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("Pa11y not found. Installing...")
+        try:
+            subprocess.run(['npm', 'install', '-g', 'pa11y'], check=True)
+            return True
+        except subprocess.CalledProcessError:
+            print("Failed to install pa11y. Please install Node.js and npm first.")
+            return False
+
+def _run_pa11y_on_html(html_content, page_name):
+    """Run pa11y accessibility testing on HTML content"""
+    if not _check_pa11y_installed():
+        return []
+    
+    # Create temporary HTML file
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as temp_file:
+        temp_file.write(html_content)
+        temp_file_path = temp_file.name
+    
+    try:
+        # Run pa11y with WCAG 2.1 AA standard and JSON reporter
+        result = subprocess.run([
+            'pa11y',
+            '--standard', 'WCAG2AA',
+            '--reporter', 'json',
+            '--timeout', '30000',
+            '--wait', '2000',
+            f'file://{temp_file_path}'
+        ], capture_output=True, text=True, timeout=60)
+        
+        if result.returncode == 0:
+            # Parse JSON output
+            try:
+                issues = json.loads(result.stdout)
+                return issues
+            except json.JSONDecodeError:
+                print(f"Failed to parse pa11y JSON output for {page_name}")
+                return []
+        else:
+            print(f"Pa11y failed for {page_name}: {result.stderr}")
+            return []
+    
+    except subprocess.TimeoutExpired:
+        print(f"Pa11y timeout for {page_name}")
+        return []
+    except Exception as e:
+        print(f"Error running pa11y for {page_name}: {str(e)}")
+        return []
+    finally:
+        # Clean up temporary file
+        try:
+            os.unlink(temp_file_path)
+        except OSError:
+            pass
+
+def _process_accessibility_issues(issues, page_name, accessibility_dict):
+    """Process pa11y issues and add them to the accessibility dictionary"""
+    if not issues:
+        _add_accessibility_entry(accessibility_dict, page_name, "PASS", "No accessibility issues found")
+        return
+    
+    # Group issues by type for better reporting
+    issue_counts = {}
+    for issue in issues:
+        issue_type = issue.get('type', 'unknown')
+        issue_counts[issue_type] = issue_counts.get(issue_type, 0) + 1
+        
+        # Add individual issue entry
+        message = issue.get('message', 'Unknown accessibility issue')
+        code = issue.get('code', '')
+        selector = issue.get('selector', '')
+        
+        _add_accessibility_entry(
+            accessibility_dict, 
+            page_name, 
+            issue_type.upper(), 
+            message, 
+            code, 
+            selector
+        )
+    
+    # Add summary entry
+    summary = ", ".join([f"{count} {type_name}" for type_name, count in issue_counts.items()])
+    _add_accessibility_entry(accessibility_dict, page_name, "SUMMARY", f"Total issues: {summary}")
+
 def _check_media_object(url: str):
     try:
         txt = requests.get(url, headers=_auth_header(CANVAS_API_KEY)).text
@@ -57,9 +157,15 @@ def _check_media_object(url: str):
     except requests.RequestException:
         return (url, "Unable to Check Media Object")
 
-def _process_html(soup, course, page, yt_links, media_links, link_media, lib_media):
+def _process_html(soup, course, page, yt_links, media_links, link_media, lib_media, accessibility_dict, html_content):
+    """Enhanced version that includes accessibility testing"""
     media_objs, iframe_objs = [], []
 
+    # Run accessibility testing on the HTML content
+    issues = _run_pa11y_on_html(html_content, page)
+    _process_accessibility_issues(issues, page, accessibility_dict)
+
+    # Original media processing code continues...
     for a in soup.find_all("a"):
         href = a.get("href")
         if not href:
@@ -121,279 +227,232 @@ def _process_html(soup, course, page, yt_links, media_links, link_media, lib_med
             name = f"Embedded Canvas Audio {aud.get('src', '')}"
             _add_entry(media_links, name, "Manually Check for Captions", page)
 
-# ----------------------------------------------------------------------
-# YouTube Helpers
-# ----------------------------------------------------------------------
-YT_DUR_RE = re.compile(r"[0-9]+[HMS]")
-
-def _parse_iso8601(duration: str):
-    h, m, sec = "0", "0", "0"
-    for token in YT_DUR_RE.findall(duration):
-        unit = token[-1]
-        val = token[:-1]
-        if unit == "H":
-            h = val
-        elif unit == "M":
-            m = val
-        elif unit == "S":
-            sec = val
-    return h, m, sec
-
-def _check_youtube(task):
-    key, vid, pages, api_key = task
-    if not vid:
-        return key, "this is a playlist, check individual videos", ("", "", ""), pages
+def _check_yt_captions(video_id: str):
     try:
-        r1 = requests.get(f"{YT_VIDEO_URL}?part=contentDetails&id={vid}&key={api_key}")
-        dur = r1.json()["items"][0]["contentDetails"]["duration"]
-        h, m, s = _parse_iso8601(dur)
-
-        r2 = requests.get(f"{YT_CAPTION_URL}?part=snippet&videoId={vid}&key={api_key}")
-        caps = r2.json().get("items", [])
-        status = "No Captions"
-        if caps:
-            langs = {c["snippet"]["language"]: c["snippet"]["trackKind"] for c in caps}
-            if "en" in langs or "en-US" in langs:
-                kind = langs.get("en") or langs.get("en-US")
-                if kind == "standard":
-                    status = "Captions found in English"
-                elif kind == "asr":
-                    status = "Automatic Captions in English"
-                else:
-                    status = "Captions in English (unknown kind)"
-            else:
-                status = "No Captions in English"
-        return key, status, (h, m, s), pages
+        params = {"part": "snippet", "videoId": video_id, "key": YOUTUBE_API_KEY}
+        response = requests.get(YT_CAPTION_URL, params=params)
+        response.raise_for_status()
+        data = response.json()
+        
+        if data["items"]:
+            for item in data["items"]:
+                if item["snippet"]["language"] == "en":
+                    return "Captions in English"
+            return "No English Captions"
+        return "No Captions"
     except Exception:
-        return key, "Unable to Check Youtube Video", ("", "", ""), pages
+        return "Unable to Check YouTube Captions"
 
-# ----------------------------------------------------------------------
-# NEW FUNCTIONS: Time handling and totaling
-# ----------------------------------------------------------------------
-def _consolidate_time(hour_str, minute_str, second_str):
-    """
-    Convert hour, minute, second strings to consolidated "HH:MM" format.
-    Rounds up seconds to the next minute if seconds > 0.
-    Returns tuple: (formatted_string, total_minutes_for_summing)
-    """
+def _get_yt_duration(video_id: str):
     try:
-        hours = int(hour_str) if hour_str and hour_str.strip() else 0
-        minutes = int(minute_str) if minute_str and minute_str.strip() else 0
-        seconds = int(second_str) if second_str and second_str.strip() else 0
+        params = {"part": "contentDetails", "id": video_id, "key": YOUTUBE_API_KEY}
+        response = requests.get(YT_VIDEO_URL, params=params)
+        response.raise_for_status()
+        data = response.json()
         
-        # Calculate total minutes for summing (before rounding up seconds)
-        total_minutes = hours * 60 + minutes + (1 if seconds > 0 else 0)
-        
-        # Round up to next minute if there are any seconds
-        if seconds > 0:
-            minutes += 1
-        
-        # Handle minute overflow
-        if minutes >= 60:
-            hours += minutes // 60
-            minutes = minutes % 60
-        
-        return f"{hours:02d}:{minutes:02d}", total_minutes
-    except (ValueError, TypeError):
-        return "", 0
+        if data["items"]:
+            duration = data["items"][0]["contentDetails"]["duration"]
+            match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration)
+            if match:
+                hours = int(match.group(1) or 0)
+                minutes = int(match.group(2) or 0)
+                seconds = int(match.group(3) or 0)
+                return hours, minutes, seconds
+    except Exception:
+        pass
+    return "", "", ""
 
-def _minutes_to_duration(total_minutes):
-    """Convert total minutes back to HH:MM format"""
-    if total_minutes <= 0:
-        return "00:00"
-    
-    hours = total_minutes // 60
-    minutes = total_minutes % 60
-    return f"{hours:02d}:{minutes:02d}"
+def _process_yt_links(yt_links, yt_media):
+    for link, pages in yt_links.items():
+        match = re.search(YT_PATTERN, link)
+        if match:
+            video_id = match.group(1)
+            status = _check_yt_captions(video_id)
+            hours, minutes, seconds = _get_yt_duration(video_id)
+            page_list = ", ".join(pages)
+            _add_entry(yt_media, link, status, page_list, hours, minutes, seconds)
 
-# ----------------------------------------------------------------------
-# MAIN FUNCTION
-# ----------------------------------------------------------------------
-def run_caption_report(course_input: str) -> str:
-    """Generate caption report and write directly to a Google Sheet (replace existing content if sheet exists)."""
-
-    # Authenticate Google Sheets for Colab
-    print("🔐 Authenticating with Google Sheets …")
-    from google.colab import auth
-    from google.auth import default
-    auth.authenticate_user()
-    creds, _ = default()
-    gc = gspread.authorize(creds)
-
-    # Get Canvas course
-    if "courses/" in course_input:
-        course_id = course_input.split("courses/")[-1].split("/")[0].split("?")[0]
-    else:
-        course_id = course_input.strip()
-
+def analyze_course(course_id: int):
+    """Main function to analyze a course for media and accessibility"""
     canvas = Canvas(CANVAS_API_URL, CANVAS_API_KEY)
     course = canvas.get_course(course_id)
-    print(f"\n📘 Processing Canvas course: {course.name}\n")
-
-    # Data containers
-    yt_links, media_links, link_media, lib_media = {}, {}, {}, {}
-
-    def _handle(html, location):
-        if not html:
-            return
-        soup = BeautifulSoup(html.encode("utf-8"), "html.parser")
-        _process_html(soup, course, location, yt_links, media_links, link_media, lib_media)
-
-    # --------------------------------------------------------------
-    # Scanning sections with printouts
-    # --------------------------------------------------------------
-    print("🔎 Scanning Pages …")
-    for p in course.get_pages():
-        _handle(course.get_page(p.url).body, p.html_url)
-
-    print("🔎 Scanning Assignments …")
-    for a in course.get_assignments():
-        _handle(a.description, a.html_url)
-
-    print("🔎 Scanning Discussions …")
-    for d in course.get_discussion_topics():
-        _handle(d.message, d.html_url)
-
-    print("🔎 Scanning Syllabus …")
-    try:
-        syllabus = canvas.get_course(course_id, include="syllabus_body")
-        _handle(syllabus.syllabus_body, f"{CANVAS_API_URL}/courses/{course_id}/assignments/syllabus")
-    except Exception:
-        print("⚠️  Could not load syllabus.")
-        pass
-
-    print("🔎 Scanning Modules …")
-    for mod in course.get_modules():
-        for item in mod.get_module_items(include="content_details"):
-            mod_url = f"{CANVAS_API_URL}/courses/{course_id}/modules/items/{item.id}"
-            if item.type == "ExternalUrl":
-                href = item.external_url
-                if re.search(YT_PATTERN, href):
-                    yt_links.setdefault(href, []).append(mod_url)
-                if any(u in href for u in LIB_MEDIA_URLS):
-                    _add_entry(lib_media, href, "Manually Check for Captions", mod_url)
-            if item.type == "File":
-                try:
-                    f = course.get_file(item.content_id)
-                    f_url = f.url.split("?")[0]
-                    name = f.display_name
-                    if "audio" in f.mime_class:
-                        _add_entry(link_media, f"Linked Audio File: {name}", "Manually Check for Captions", mod_url, file_location=f_url)
-                    if "video" in f.mime_class:
-                        _add_entry(link_media, f"Linked Video File: {name}", "Manually Check for Captions", mod_url, file_location=f_url)
-                except Exception:
-                    pass
-
-    print("🔎 Scanning Announcements …")
-    for ann in course.get_discussion_topics(only_announcements=True):
-        _handle(ann.message, ann.html_url)
-
-    # --------------------------------------------------------------
-    # YouTube processing
-    # --------------------------------------------------------------
-    print("\n▶️  Checking YouTube captions …")
-    yt_tasks, yt_processed = [], {}
-    for key, pages in yt_links.items():
-        if "list" in key:
-            yt_processed[key] = ["this is a playlist, check individual videos", "", "", ""] + pages
-            continue
-        vid_match = re.findall(YT_PATTERN, key, re.IGNORECASE)
-        video_id = vid_match[0] if vid_match else None
-        if video_id:
-            yt_tasks.append((key, video_id, pages, YOUTUBE_API_KEY))
-        else:
-            yt_processed[key] = ["Unable to parse Video ID", "", "", ""] + pages
-
-    if yt_tasks:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
-            for k, st, (h, m, s), pg in ex.map(_check_youtube, yt_tasks):
-                yt_processed[k] = [st, h, m, s] + pg
-    yt_links = yt_processed
-
-    # --------------------------------------------------------------
-    # Combine results into a DataFrame with consolidated time and totaling
-    # --------------------------------------------------------------
-    print("\n📊 Compiling results …")
-
-    # Check if there are any linked audio/video files
-    has_linked_files = len(link_media) > 0
-
-    rows = []
-    total_minutes = 0  # Track total duration
     
-    for container in (yt_links, media_links, link_media, lib_media):
-        for key, vals in container.items():
-            # Extract time components (if they exist)
-            if len(vals) >= 4:
-                status, hour, minute, second = vals[0], vals[1], vals[2], vals[3]
-                location = vals[4] if len(vals) > 4 else ""
-                file_location = vals[5] if len(vals) > 5 else ""
-                
-                # Consolidate time and get minutes for totaling
-                duration, minutes_to_add = _consolidate_time(hour, minute, second)
-                total_minutes += minutes_to_add
-                
-                # Build row based on whether we have file locations
-                if has_linked_files:
-                    rows.append([key, status, duration, location, file_location])
-                else:
-                    rows.append([key, status, duration, location])
-            else:
-                # Fallback for entries without time data
-                if has_linked_files:
-                    rows.append([key] + vals + [""] * (5 - len(vals)))
-                else:
-                    rows.append([key] + vals + [""] * (4 - len(vals)))
-
-    # Add total row
-    total_duration = _minutes_to_duration(total_minutes)
-    if has_linked_files:
-        total_row = ["Total Duration", "", total_duration, "", ""]
-    else:
-        total_row = ["Total Duration", "", total_duration, ""]
+    # Initialize dictionaries for different types of content
+    yt_links = {}
+    media_links = {}
+    link_media = {}
+    lib_media = {}
+    accessibility_dict = {}  # New dictionary for accessibility issues
     
-    rows.append(total_row)
+    print(f"Analyzing course: {course.name}")
+    
+    # Get all pages
+    pages = list(course.get_pages())
+    
+    for page in pages:
+        try:
+            page_content = page.show_latest_revision()
+            if hasattr(page_content, 'body') and page_content.body:
+                soup = BeautifulSoup(page_content.body, 'html.parser')
+                _process_html(soup, course, page.title, yt_links, media_links, 
+                            link_media, lib_media, accessibility_dict, page_content.body)
+        except Exception as e:
+            print(f"Error processing page {page.title}: {str(e)}")
+    
+    # Process modules and their items
+    modules = list(course.get_modules())
+    for module in modules:
+        try:
+            items = list(module.get_module_items())
+            for item in items:
+                if item.type == 'Page':
+                    try:
+                        page = course.get_page(item.page_url)
+                        page_content = page.show_latest_revision()
+                        if hasattr(page_content, 'body') and page_content.body:
+                            soup = BeautifulSoup(page_content.body, 'html.parser')
+                            _process_html(soup, course, f"{module.name} - {item.title}", 
+                                        yt_links, media_links, link_media, lib_media, 
+                                        accessibility_dict, page_content.body)
+                    except Exception as e:
+                        print(f"Error processing module item {item.title}: {str(e)}")
+        except Exception as e:
+            print(f"Error processing module {module.name}: {str(e)}")
+    
+    # Process YouTube links
+    yt_media = {}
+    _process_yt_links(yt_links, yt_media)
+    
+    # Create comprehensive report
+    return {
+        'youtube_media': yt_media,
+        'canvas_media': media_links,
+        'linked_media': link_media,
+        'library_media': lib_media,
+        'accessibility_issues': accessibility_dict  # New accessibility section
+    }
 
-    # Define columns based on whether there are linked files
-    if has_linked_files:
-        columns = [
-            "Media", "Caption Status", "Duration (HH:MM)", "Location", "File Location"
-        ]
-    else:
-        columns = [
-            "Media", "Caption Status", "Duration (HH:MM)", "Location"
-        ]
+def create_vast_report(course_analysis, course_name):
+    """Create VAST report including accessibility data"""
+    all_data = []
+    
+    # Add YouTube media
+    for name, data in course_analysis['youtube_media'].items():
+        all_data.append({
+            'Type': 'YouTube Video',
+            'Name/URL': name,
+            'Status': data[0],
+            'Hours': data[1],
+            'Minutes': data[2],
+            'Seconds': data[3],
+            'Page': data[4],
+            'File Location': data[5] if len(data) > 5 else ""
+        })
+    
+    # Add Canvas media
+    for name, data in course_analysis['canvas_media'].items():
+        all_data.append({
+            'Type': 'Canvas Media',
+            'Name/URL': name,
+            'Status': data[0],
+            'Hours': data[1],
+            'Minutes': data[2],
+            'Seconds': data[3],
+            'Page': data[4],
+            'File Location': data[5] if len(data) > 5 else ""
+        })
+    
+    # Add linked media
+    for name, data in course_analysis['linked_media'].items():
+        all_data.append({
+            'Type': 'Linked Media',
+            'Name/URL': name,
+            'Status': data[0],
+            'Hours': data[1],
+            'Minutes': data[2],
+            'Seconds': data[3],
+            'Page': data[4],
+            'File Location': data[5] if len(data) > 5 else ""
+        })
+    
+    # Add library media
+    for name, data in course_analysis['library_media'].items():
+        all_data.append({
+            'Type': 'Library Media',
+            'Name/URL': name,
+            'Status': data[0],
+            'Hours': data[1],
+            'Minutes': data[2],
+            'Seconds': data[3],
+            'Page': data[4],
+            'File Location': data[5] if len(data) > 5 else ""
+        })
+    
+    # Add accessibility issues
+    for name, data in course_analysis['accessibility_issues'].items():
+        all_data.append({
+            'Type': 'Accessibility (WCAG 2.1 AA)',
+            'Name/URL': name,
+            'Status': data[0],
+            'Hours': data[1],
+            'Minutes': data[2],
+            'Seconds': data[3],
+            'Page': data[4],
+            'File Location': data[5] if len(data) > 5 else ""
+        })
+    
+    # Create DataFrame
+    df = pd.DataFrame(all_data)
+    
+    # Add summary statistics
+    summary_stats = {
+        'Total YouTube Videos': len(course_analysis['youtube_media']),
+        'Total Canvas Media': len(course_analysis['canvas_media']),
+        'Total Linked Media': len(course_analysis['linked_media']),
+        'Total Library Media': len(course_analysis['library_media']),
+        'Total Accessibility Issues': len(course_analysis['accessibility_issues'])
+    }
+    
+    return df, summary_stats
 
-    df = pd.DataFrame(rows, columns=columns)
-
-    # --------------------------------------------------------------
-    # Create or replace Google Sheet
-    # --------------------------------------------------------------
-    print("\n📄 Creating or updating Google Sheet …")
-    sheet_title = f"{course.name} VAST Report"
-
+def upload_to_google_sheets(df, sheet_name, worksheet_name="VAST Report"):
+    """Upload the report to Google Sheets"""
     try:
-        existing_sheets = gc.list_spreadsheet_files()
-        sheet = next((s for s in existing_sheets if s["name"] == sheet_title), None)
-    except Exception:
-        sheet = None
+        gc = gspread.service_account()
+        sh = gc.open(sheet_name)
+        
+        try:
+            worksheet = sh.worksheet(worksheet_name)
+        except gspread.WorksheetNotFound:
+            worksheet = sh.add_worksheet(title=worksheet_name, rows="1000", cols="20")
+        
+        set_with_dataframe(worksheet, df)
+        print(f"Report uploaded to Google Sheets: {sheet_name}")
+        
+    except Exception as e:
+        print(f"Error uploading to Google Sheets: {str(e)}")
 
-    if sheet:
-        print(f"♻️  Found existing sheet: {sheet_title}. Replacing contents …")
-        sh = gc.open_by_key(sheet["id"])
-        ws = sh.sheet1
-        ws.clear()
-    else:
-        print(f"🆕 No existing sheet found. Creating new sheet: {sheet_title}")
-        sh = gc.create(sheet_title)
-        ws = sh.sheet1
-
-    set_with_dataframe(ws, df)
-    try:
-        sh.share('', perm_type='anyone', role='reader')
-    except Exception:
-        pass
-
-    print(f"\n✅ Report complete for: {course.name}")
-    print(f"📎 Google Sheet URL: {sh.url}")
-    print(f"⏱️  Total media duration: {total_duration}")
+# Example usage
+if __name__ == "__main__":
+    # Replace with your course ID
+    COURSE_ID = 12345
+    
+    # Analyze the course
+    print("Starting course analysis...")
+    analysis = analyze_course(COURSE_ID)
+    
+    # Create report
+    course_name = f"Course_{COURSE_ID}"
+    df, stats = create_vast_report(analysis, course_name)
+    
+    # Print summary
+    print("\n=== VAST Report Summary ===")
+    for key, value in stats.items():
+        print(f"{key}: {value}")
+    
+    # Save to CSV
+    df.to_csv(f"{course_name}_vast_report.csv", index=False)
+    print(f"\nReport saved as {course_name}_vast_report.csv")
+    
+    # Optionally upload to Google Sheets
+    # upload_to_google_sheets(df, "VAST Reports", f"{course_name} Report")
