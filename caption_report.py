@@ -8,6 +8,7 @@ import gspread
 from gspread_dataframe import set_with_dataframe
 import pandas as pd
 import math
+from canvasapi import Canvas
 
 # --------------------------------------------------------------
 # 1️⃣ CONSTANTS – your secrets (keep notebook private)
@@ -32,15 +33,6 @@ LIB_MEDIA_URLS = [
 "kanopystreaming-com",
 "hosted.panopto.com"
 ]
-
-# ----------------------------------------------------------------------
-# CanvasAPI
-# ----------------------------------------------------------------------
-try:
-from canvasapi import Canvas
-except ImportError as exc:
-raise ImportError("Please install canvasapi via `!pip install canvasapi`") from exc
-
 
 # ----------------------------------------------------------------------
 # Helper Functions
@@ -388,3 +380,4 @@ pass
 
 print(f"\n✅ Report complete for: {course.name}")
 print(f"📎 Google Sheet URL: {sh.url}")
+
